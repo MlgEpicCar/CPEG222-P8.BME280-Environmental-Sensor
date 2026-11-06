@@ -11,6 +11,7 @@
 #include "SysClock180MHz.h"
 #include "i2c.h"
 #include "bme280.h"
+#include "Audio.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -24,6 +25,7 @@ uint32_t initialClock;
 uint32_t finalClock;
 
 volatile uint32_t milliseconds = 0;
+volatile uint32_t ticks = 0;          // free-running 1 ms counter (alarm timing)
 volatile uint8_t sensor_update_flag = 0;
 volatile uint8_t color = 3;
 
@@ -44,6 +46,7 @@ char buffer[90];
 void SysTick_Handler(void) // SysTick Interrupt Handler
 {
     milliseconds++;
+    ticks++;
 
     if (milliseconds >= 1000)
     {
@@ -88,6 +91,67 @@ int32_t Celsius_To_Fahrenheit(int32_t temperature) // Convert Celsius to Fahrenh
     return (temperature * 9) / 5 + 3200;
 }
 
+/* ---------------------------------------------------------
+   Extra credit: alarm (temp > 80 F or RH > 50%)
+   Flashes the NeoPixels blue/red and sweeps a siren up and down
+   until the condition ends.
+   --------------------------------------------------------- */
+#define ALARM_FLASH_MS   250U     // blue/high tone <-> red/low tone period
+#define SIREN_HIGH_HZ    2000.0f
+#define SIREN_LOW_HZ     1000.0f
+
+static uint8_t  alarm_active = 0;
+static uint8_t  alarm_red = 0;
+static uint32_t alarm_flash_tick = 0;
+
+static void NeoPixel_SetAll(uint8_t r, uint8_t g, uint8_t b)
+{
+    for (uint8_t i = 0; i < 4; i++)
+    {
+        NeoPixel_SetPixel(i, r, g, b);
+    }
+    NeoPixel_Show();
+}
+
+static void Alarm_Start(void)
+{
+    alarm_active = 1;
+    alarm_red = 0;
+    alarm_flash_tick = ticks;
+
+    NeoPixel_SetAll(0, 0, 255);               // start on blue
+    Audio_SetFrequency(SIREN_HIGH_HZ);        // remember starting pitch (audio not enabled yet)
+    Audio_SetEnabled(1);                      // starts the high tone
+}
+
+static void Alarm_Stop(void)
+{
+    alarm_active = 0;
+    Audio_SetEnabled(0);
+    // the status color is restored by the next sensor update
+}
+
+// Called every pass through the main loop while the alarm is active
+static void Alarm_Update(void)
+{
+    if ((ticks - alarm_flash_tick) >= ALARM_FLASH_MS)
+    {
+        alarm_flash_tick = ticks;
+        alarm_red ^= 1U;
+
+        if (alarm_red)
+        {
+            NeoPixel_SetAll(255, 0, 0);
+            Audio_SetFrequency(SIREN_LOW_HZ);    // jumps straight to the low tone
+        }
+        else
+        {
+            NeoPixel_SetAll(0, 0, 255);
+            Audio_SetFrequency(SIREN_HIGH_HZ);   // jumps straight to the high tone
+        }
+    }
+}
+
 int main(void)
 {
     BME280_Data sensor;
@@ -117,6 +181,7 @@ int main(void)
     NeoPixel_Init();
     I2C1_Init();
     Humidity_LED_Init();
+    Audio_Init();
 
     if (!BME280_Init(BME280_ADDR_LOW))
     {
@@ -144,21 +209,33 @@ int main(void)
             {
                 int32_t temperature = sensor.temperature;
 
-                if (Celsius_To_Fahrenheit(temperature) < 70) {
+                if (Celsius_To_Fahrenheit(temperature) < 7000) {
                     color = 0;
-                } else if (70 <= Celsius_To_Fahrenheit(temperature) && Celsius_To_Fahrenheit(temperature) <= 80) {
+                } else if (7000 <= Celsius_To_Fahrenheit(temperature) && Celsius_To_Fahrenheit(temperature) <= 8000) {
                     color = 1;
-                } else if (80 < Celsius_To_Fahrenheit(temperature) ){
+                } else if (8000 < Celsius_To_Fahrenheit(temperature) ){
                     color = 2;
                 } else {
                     color = 3;
                 }
 
-                NeoPixel_SetPixel(0, color_table[color].r, color_table[color].g, color_table[color].b);
-                NeoPixel_SetPixel(1, color_table[color].r, color_table[color].g, color_table[color].b);
-                NeoPixel_SetPixel(2, color_table[color].r, color_table[color].g, color_table[color].b);
-                NeoPixel_SetPixel(3, color_table[color].r, color_table[color].g, color_table[color].b);
-                NeoPixel_Show();
+
+                uint8_t alarm_needed = (Celsius_To_Fahrenheit(temperature) > 8000) || (sensor.humidity > 50000U);
+                if (alarm_needed && !alarm_active)
+                {
+                    Alarm_Start();
+                }
+                else if (!alarm_needed && alarm_active)
+                {
+                    Alarm_Stop();
+                }
+
+                // While the alarm runs it owns the NeoPixels; otherwise show the status color
+                if (!alarm_active)
+                {
+                    NeoPixel_SetAll(color_table[color].r, color_table[color].g, color_table[color].b);
+                }
+
 
                 /* Read S1 and select temperature units */
                 uint8_t use_celsius =
@@ -216,6 +293,11 @@ int main(void)
         }
 
         SSD_Refresh();
+
+        if (alarm_active)
+        {
+            Alarm_Update();
+        }
     }
 
     return 0;

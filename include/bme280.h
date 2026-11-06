@@ -1,4 +1,3 @@
-
 #ifndef BME280_H
 #define BME280_H
 
@@ -20,6 +19,13 @@
 
 #define BME280_CHIP_ID        0x60
 
+/* Error codes reported by BME280_LastError() after BME280_Init() fails */
+#define BME280_ERR_NONE       0
+#define BME280_ERR_I2C        1   // sensor never answered on the bus
+#define BME280_ERR_ID         2   // something answered, but not a BME280
+#define BME280_ERR_CALIB      3   // could not read calibration data
+#define BME280_ERR_CONFIG     4   // configuration did not stick
+
 /* Sensor measurement results */
 typedef struct
 {
@@ -30,7 +36,8 @@ typedef struct
 } BME280_Data;
 
 /* Public functions */
-int BME280_Init(uint8_t address);
-int BME280_Read(BME280_Data *data);
+int BME280_Init(uint8_t address);   // returns 1 on success, 0 on failure
+int BME280_Read(BME280_Data *data); // returns 1 on success, 0 on failure
+int BME280_LastError(void);         // BME280_ERR_* code from the last Init
 
 #endif

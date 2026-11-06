@@ -1,4 +1,3 @@
-
 #include "bme280.h"
 #include "i2c.h"
 
@@ -35,123 +34,67 @@ typedef struct
 static BME280_Calibration calib;
 static uint8_t sensor_address;
 static int32_t t_fine;
+static int last_error = BME280_ERR_NONE;
 
 /* ---------------------------------------------------------
-   Read one byte from a BME280 register
+   Register access helpers (0 = success)
    --------------------------------------------------------- */
 
-static uint8_t BME280_ReadByte(uint8_t reg)
+static int BME280_ReadRegs(uint8_t reg, uint8_t *buf, uint16_t len)
 {
-    uint8_t value = 0;
+    return I2C1_ReadRegisters(sensor_address, reg, buf, len);
+}
 
-    I2C1_ReadRegisters(sensor_address, reg, &value, 1);
-
-    return value;
+static int BME280_WriteByte(uint8_t reg, uint8_t value)
+{
+    return I2C1_WriteRegister(sensor_address, reg, &value, 1);
 }
 
 /* ---------------------------------------------------------
-   Write one byte to a BME280 register
+   Read calibration coefficients (burst reads)
    --------------------------------------------------------- */
 
-static void BME280_WriteByte(uint8_t reg, uint8_t value)
+static int BME280_ReadCalibration(void)
 {
-    I2C1_WriteRegister(sensor_address, reg, &value, 1);
-}
+    uint8_t tp[24];   // 0x88..0x9F : T1-T3, P1-P9
+    uint8_t h1;       // 0xA1       : H1
+    uint8_t h[7];     // 0xE1..0xE7 : H2-H6
 
-/* ---------------------------------------------------------
-   Read calibration coefficients
-   --------------------------------------------------------- */
+    if (BME280_ReadRegs(0x88, tp, sizeof(tp)) != 0) return 0;
+    if (BME280_ReadRegs(0xA1, &h1, 1) != 0)         return 0;
+    if (BME280_ReadRegs(0xE1, h, sizeof(h)) != 0)   return 0;
 
-static void BME280_ReadCalibration(void)
-{
-    uint8_t a, b, c, d, e, f, g;
+    /* Temperature and pressure: little-endian 16-bit values */
+    calib.dig_T1 = (uint16_t)(tp[0]  | (tp[1]  << 8));
+    calib.dig_T2 = (int16_t) (tp[2]  | (tp[3]  << 8));
+    calib.dig_T3 = (int16_t) (tp[4]  | (tp[5]  << 8));
 
-    /* Temperature calibration */
-    calib.dig_T1 =
-        (uint16_t)BME280_ReadByte(0x88) |
-        ((uint16_t)BME280_ReadByte(0x89) << 8);
+    calib.dig_P1 = (uint16_t)(tp[6]  | (tp[7]  << 8));
+    calib.dig_P2 = (int16_t) (tp[8]  | (tp[9]  << 8));
+    calib.dig_P3 = (int16_t) (tp[10] | (tp[11] << 8));
+    calib.dig_P4 = (int16_t) (tp[12] | (tp[13] << 8));
+    calib.dig_P5 = (int16_t) (tp[14] | (tp[15] << 8));
+    calib.dig_P6 = (int16_t) (tp[16] | (tp[17] << 8));
+    calib.dig_P7 = (int16_t) (tp[18] | (tp[19] << 8));
+    calib.dig_P8 = (int16_t) (tp[20] | (tp[21] << 8));
+    calib.dig_P9 = (int16_t) (tp[22] | (tp[23] << 8));
 
-    calib.dig_T2 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x8A) |
-        ((uint16_t)BME280_ReadByte(0x8B) << 8));
+    /* Humidity */
+    calib.dig_H1 = h1;
+    calib.dig_H2 = (int16_t)(h[0] | (h[1] << 8));
+    calib.dig_H3 = h[2];
 
-    calib.dig_T3 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x8C) |
-        ((uint16_t)BME280_ReadByte(0x8D) << 8));
+    /* H4 and H5 are packed, signed 12-bit values:
+       H4 = E4[7:0] E5[3:0],  H5 = E6[7:0] E5[7:4] */
+    uint16_t raw_H4 = (uint16_t)((h[3] << 4) | (h[4] & 0x0F));
+    uint16_t raw_H5 = (uint16_t)((h[5] << 4) | (h[4] >> 4));
 
-    /* Pressure calibration */
-    calib.dig_P1 =
-        (uint16_t)BME280_ReadByte(0x8E) |
-        ((uint16_t)BME280_ReadByte(0x8F) << 8);
+    calib.dig_H4 = (raw_H4 & 0x0800) ? (int16_t)(raw_H4 - 4096) : (int16_t)raw_H4;
+    calib.dig_H5 = (raw_H5 & 0x0800) ? (int16_t)(raw_H5 - 4096) : (int16_t)raw_H5;
 
-    calib.dig_P2 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x90) |
-        ((uint16_t)BME280_ReadByte(0x91) << 8));
+    calib.dig_H6 = (int8_t)h[6];
 
-    calib.dig_P3 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x92) |
-        ((uint16_t)BME280_ReadByte(0x93) << 8));
-
-    calib.dig_P4 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x94) |
-        ((uint16_t)BME280_ReadByte(0x95) << 8));
-
-    calib.dig_P5 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x96) |
-        ((uint16_t)BME280_ReadByte(0x97) << 8));
-
-    calib.dig_P6 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x98) |
-        ((uint16_t)BME280_ReadByte(0x99) << 8));
-
-    calib.dig_P7 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x9A) |
-        ((uint16_t)BME280_ReadByte(0x9B) << 8));
-
-    calib.dig_P8 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x9C) |
-        ((uint16_t)BME280_ReadByte(0x9D) << 8));
-
-    calib.dig_P9 =
-        (int16_t)((uint16_t)BME280_ReadByte(0x9E) |
-        ((uint16_t)BME280_ReadByte(0x9F) << 8));
-
-    /* Humidity calibration */
-    calib.dig_H1 = BME280_ReadByte(0xA1);
-
-    calib.dig_H2 =
-        (int16_t)((uint16_t)BME280_ReadByte(0xE1) |
-        ((uint16_t)BME280_ReadByte(0xE2) << 8));
-
-    calib.dig_H3 = BME280_ReadByte(0xE3);
-
-    a = BME280_ReadByte(0xE4);
-    b = BME280_ReadByte(0xE5);
-    c = BME280_ReadByte(0xE6);
-
-    /* H4 and H5 are packed 12-bit signed values. */
-    d = (uint8_t)((a << 4) | (b & 0x0F));
-    e = (uint8_t)((c << 4) | (b >> 4));
-
-    /* Read as unsigned 12-bit values first. */
-    uint16_t raw_H4 = ((uint16_t)a << 4) | (b & 0x0F);
-    uint16_t raw_H5 = ((uint16_t)c << 4) | (b >> 4);
-
-    /* Sign extend from 12 bits. */
-    calib.dig_H4 = (raw_H4 & 0x0800)
-                   ? (int16_t)(raw_H4 - 4096)
-                   : (int16_t)raw_H4;
-
-    calib.dig_H5 = (raw_H5 & 0x0800)
-                   ? (int16_t)(raw_H5 - 4096)
-                   : (int16_t)raw_H5;
-
-    calib.dig_H6 = (int8_t)BME280_ReadByte(0xE7);
-
-    (void)d;
-    (void)e;
-    (void)f;
-    (void)g;
+    return 1;
 }
 
 /* ---------------------------------------------------------
@@ -160,40 +103,113 @@ static void BME280_ReadCalibration(void)
 
 int BME280_Init(uint8_t address)
 {
-    sensor_address = address;
-
-    /* Check sensor chip ID. */
-    if (BME280_ReadByte(BME280_REG_ID) != BME280_CHIP_ID)
+    const uint8_t candidates[2] =
     {
+        address,
+        (address == BME280_ADDR_LOW) ? BME280_ADDR_HIGH : BME280_ADDR_LOW
+    };
+
+    uint8_t id = 0;
+    uint8_t found = 0;
+    uint8_t answered = 0;
+
+    last_error = BME280_ERR_I2C;
+
+    /* The BME280 needs 2 ms after power-up; leave plenty of margin. */
+    I2C1_DelayUs(10000);
+
+    /* Look for the sensor. If it does not answer, free the bus (a slave left
+       mid-transfer by a reset can hold SDA low) and try again. */
+    for (uint8_t attempt = 0; (attempt < 3U) && !found; attempt++)
+    {
+        if (attempt > 0)
+        {
+            I2C1_Recover();
+            I2C1_DelayUs(10000);
+        }
+
+        for (uint8_t i = 0; (i < 2U) && !found; i++)
+        {
+            sensor_address = candidates[i];
+
+            if (BME280_ReadRegs(BME280_REG_ID, &id, 1) == 0)
+            {
+                answered = 1;
+
+                if (id == BME280_CHIP_ID)
+                {
+                    found = 1;
+                }
+            }
+        }
+    }
+
+    if (!found)
+    {
+        last_error = answered ? BME280_ERR_ID : BME280_ERR_I2C;
         return 0;
     }
 
-    /* Reset sensor. */
-    BME280_WriteByte(BME280_REG_RESET, 0xB6);
-
-    /* Allow time for reset. */
-    for (volatile uint32_t i = 0; i < 100000U; i++)
+    /* Soft reset, then wait for startup and for the NVM calibration copy
+       (status bit 0 = im_update) to finish. */
+    if (BME280_WriteByte(BME280_REG_RESET, 0xB6) != 0)
     {
-        __NOP();
+        last_error = BME280_ERR_I2C;
+        return 0;
+    }
+
+    I2C1_DelayUs(5000);
+
+    for (uint8_t i = 0; i < 50U; i++)
+    {
+        uint8_t status = 0xFF;
+
+        if ((BME280_ReadRegs(BME280_REG_STATUS, &status, 1) == 0) &&
+            !(status & 0x01))
+        {
+            break;
+        }
+
+        I2C1_DelayUs(2000);
     }
 
     /* Read factory calibration coefficients. */
-    BME280_ReadCalibration();
+    if (!BME280_ReadCalibration())
+    {
+        last_error = BME280_ERR_CALIB;
+        return 0;
+    }
 
-    /* Humidity oversampling x1. */
-    BME280_WriteByte(BME280_REG_CTRL_HUM, 0x01);
+    /* Humidity oversampling x1 (must be written before CTRL_MEAS). */
+    int rc = BME280_WriteByte(BME280_REG_CTRL_HUM, 0x01);
 
     /* Standby time and filter configuration. */
-    BME280_WriteByte(BME280_REG_CONFIG, 0x00);
+    rc |= BME280_WriteByte(BME280_REG_CONFIG, 0x00);
 
     /*
        Temperature oversampling: x1
        Pressure oversampling: x1
        Normal operating mode
     */
-    BME280_WriteByte(BME280_REG_CTRL_MEAS, 0x27);
+    rc |= BME280_WriteByte(BME280_REG_CTRL_MEAS, 0x27);
 
+    /* Read back to confirm the configuration actually landed. */
+    uint8_t ctrl_meas = 0;
+    rc |= BME280_ReadRegs(BME280_REG_CTRL_MEAS, &ctrl_meas, 1);
+
+    if ((rc != 0) || (ctrl_meas != 0x27))
+    {
+        last_error = BME280_ERR_CONFIG;
+        return 0;
+    }
+
+    last_error = BME280_ERR_NONE;
     return 1;
+}
+
+int BME280_LastError(void)
+{
+    return last_error;
 }
 
 /* ---------------------------------------------------------
@@ -308,24 +324,14 @@ int BME280_Read(BME280_Data *data)
     if (data == 0)
         return 0;
 
-    /* Wait until sensor is not measuring. */
-    uint32_t timeout = 100000U;
-
-    while (BME280_ReadByte(BME280_REG_STATUS) & 0x08)
-    {
-        if (--timeout == 0)
-            return 0;
-    }
-
     /*
-       Read pressure, temperature and humidity.
-       Current I2C driver supports one-byte reads,
-       so read each register individually.
+       Read pressure, temperature and humidity in ONE burst. The sensor
+       freezes its output registers during a burst read, so all three values
+       come from the same measurement (reading them byte-by-byte could mix
+       two different samples).
     */
-    for (uint8_t i = 0; i < 8; i++)
-    {
-        raw[i] = BME280_ReadByte(BME280_REG_PRESS_MSB + i);
-    }
+    if (BME280_ReadRegs(BME280_REG_PRESS_MSB, raw, sizeof(raw)) != 0)
+        return 0;
 
     /* Assemble 20-bit pressure measurement. */
     int32_t adc_P =
@@ -343,6 +349,10 @@ int BME280_Read(BME280_Data *data)
     int32_t adc_H =
         ((int32_t)raw[6] << 8) |
         raw[7];
+
+    /* 0x80000 is the power-on value: no conversion has finished yet. */
+    if (adc_T == 0x80000)
+        return 0;
 
     /* Compensate and store measurements */
     data->temperature = BME280_CompensateTemperature(adc_T);
