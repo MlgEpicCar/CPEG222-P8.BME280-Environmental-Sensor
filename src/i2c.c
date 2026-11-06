@@ -1,14 +1,13 @@
-
 #include "i2c.h"
 
-#define I2C_TIMEOUT       1000000U
+#define I2C_TIMEOUT 1000000U
 
 // Assumes APB1 clock = 45 MHz
 // (180 MHz system clock with APB1 prescaler of /4)
-#define I2C_CLOCK         45000000U
-#define I2C_SPEED         100000U
+#define I2C_CLOCK 45000000U
+#define I2C_SPEED 100000U
 
-static void I2C1_Wait(volatile uint32_t *reg, uint32_t flag)
+static uint8_t I2C1_Wait(volatile uint32_t *reg, uint32_t flag)
 {
     uint32_t timeout = I2C_TIMEOUT;
 
@@ -17,9 +16,11 @@ static void I2C1_Wait(volatile uint32_t *reg, uint32_t flag)
         if (--timeout == 0)
         {
             I2C1->CR1 |= I2C_CR1_STOP;
-            return;
+            return 0;
         }
     }
+
+    return 1;
 }
 
 static void I2C1_Start(void)

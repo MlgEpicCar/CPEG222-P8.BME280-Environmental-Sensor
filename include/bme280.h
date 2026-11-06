@@ -31,7 +31,6 @@ typedef struct
 
 /* Public functions */
 int BME280_Init(uint8_t address);
-
 int BME280_Read(BME280_Data *data);
 
 #endif

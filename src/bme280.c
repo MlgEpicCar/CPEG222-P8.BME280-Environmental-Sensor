@@ -344,11 +344,9 @@ int BME280_Read(BME280_Data *data)
         ((int32_t)raw[6] << 8) |
         raw[7];
 
-    /* Compensate and store measurements. */
+    /* Compensate and store measurements */
     data->temperature = BME280_CompensateTemperature(adc_T);
-
     data->pressure = BME280_CompensatePressure(adc_P);
-
     data->humidity = BME280_CompensateHumidity(adc_H);
 
     return 1;

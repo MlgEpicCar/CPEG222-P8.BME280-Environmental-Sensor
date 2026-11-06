@@ -7,7 +7,6 @@
 // ****************************************************************
 #include "stm32f4xx.h"// CMSIS STM32F4xx header file
 #include "OLED.h"
-#include "logo_bitmap.h"
 #include <stddef.h>// For size_t definition
 
 /* Switch Definitions */
@@ -224,22 +223,5 @@ static void delay_ms(uint32_t ms) {// Simple delay function that loops for the s
     uint32_t i;
     for (i = 0; i < (ms * 1000U); ++i) {// Loop for the specified number of iterations to create a delay
         __NOP();// No operation, just waste time
-    }
-}
-void SH1106_RenderFullScreenLogo(void) {
-    uint8_t inverted_logo[8][128];
-    // SH1106 RAM is 132 columns wide; Physical Col 0 matches internal index 2
-    uint8_t physical_col_offset = 2; 
-    for (uint8_t page = 0; page < 8; page++) {
-        // 1. Issue command to increment active target Page pointer (0xB0 -> 0xB7)
-        OLED_WriteCmd(0xB0 + page); 
-        // 2. Clear out column vectors to the starting point
-        OLED_WriteCmd(0x00 + (physical_col_offset & 0x0F));        // Lower 4-bits
-        OLED_WriteCmd(0x10 + ((physical_col_offset >> 4) & 0x0F)); // Higher 4-bits
-        // 3. Fast sequence stream all 128 data columns over the bus
-        for (uint16_t col = 0; col < 128; col++) {
-             inverted_logo[page][col] = udel_logo_128x64[page][col] ^ 0xFF;
-            OLED_WriteData(&inverted_logo[page][col], 1);
-        }
     }
 }
