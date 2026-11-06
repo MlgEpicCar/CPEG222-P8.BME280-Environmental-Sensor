@@ -167,10 +167,10 @@ void SSD_Refresh(void)
             break;
         case 1:
             GPIOE->BSRR = (1U << (PIN_DIGIT1 + 16));
+            GPIOF->BSRR = (1U << (PIN_DecimalPoint + 16));
             break;
         case 2:
             GPIOB->BSRR = (1U << (PIN_DIGIT2 + 16));
-            GPIOF->BSRR = (1U << (PIN_DecimalPoint + 16));
             break;
         case 3:
             GPIOB->BSRR = (1U << (PIN_DIGIT3 + 16));
